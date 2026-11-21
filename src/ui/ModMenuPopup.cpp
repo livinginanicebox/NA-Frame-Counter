@@ -6,6 +6,7 @@
 
 #include <Geode/cocos/draw_nodes/CCDrawNode.h>
 #include <Geode/ui/ColorPickPopup.hpp>
+#include <Geode/ui/NineSlice.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <fmt/format.h>
 #include <algorithm>
@@ -592,6 +593,22 @@ void ModMenuPopup::rebuildCurrentTab() {
             );
             addToggleRow(rows, kListW, "Ignore Non-Fatal Clicks", "ignore-harmless-clicks", cfg.ignoreHarmlessClicks);
             addToggleRow(rows, kListW, "Show Over-Limit (>Max) Badge", "show-over-limit", cfg.showOverLimit);
+
+            addSectionHeader(rows, kListW, "Sub-Frame Accuracy & Scoring");
+            addToggleRow(rows, kListW, "Score Inputs By Sub-Frame Accuracy", "subframe-scoring", cfg.subFrameScoring);
+            addSliderRow(rows, kListW, "Jitter Window (Frames)", "subframe-jitter-frames",
+                static_cast<float>(cfg.subFrameJitterFrames), 0.f, 4.f, 0.25f, 2);
+
+            addSectionHeader(rows, kListW, "Click-Between-Frames (CBF) Detection");
+            addCycleRow(
+                rows, kListW, "CBF Badge Style",
+                {"Off", "Compact", "Verbose"},
+                mod ? mod->getSettingValue<std::string>("cbf-badge") : "Compact",
+                "cbf-badge"
+            );
+            addToggleRow(rows, kListW, "Count Release-Side CBF", "cbf-include-releases", cfg.cbfIncludeReleases);
+            addSliderRow(rows, kListW, "CBF Guard Window (Frames)", "cbf-guard-frames",
+                static_cast<float>(cfg.cbfGuardFrames), 0.f, 0.45f, 0.01f, 2);
             break;
         }
         case Tab::Visuals: {
@@ -693,6 +710,24 @@ void ModMenuPopup::rebuildCurrentTab() {
             addToggleRow(rows, kListW, "Tag Releases With 'R' (e.g. R1)", "distinguish-release", cfg.distinguishRelease, [weakSelf](bool) {
                 if (auto self = weakSelf.lock(); self && !self->m_closed) self->updateVisualPreview();
             });
+            addToggleRow(rows, kListW, "Heatmap Markers (Phase Tint)", "marker-heatmap", cfg.markerHeatmap, [weakSelf](bool) {
+                if (auto self = weakSelf.lock(); self && !self->m_closed) self->updateVisualPreview();
+            });
+
+            addSectionHeader(rows, kListW, "Sub-Frame Markers (0.4F / 3.2F)");
+            addCycleRow(
+                rows, kListW, "Sub-Frame Label Format",
+                {"Whole Frames (1, 2, 3)", "Decimal Frame (1.4)", "Tick Offset (1+0.4)"},
+                mod ? mod->getSettingValue<std::string>("subframe-mode") : "Decimal Frame (1.4)",
+                "subframe-mode",
+                [weakSelf](std::string const&) {
+                    if (auto self = weakSelf.lock(); self && !self->m_closed) self->updateVisualPreview();
+                }
+            );
+            addSliderRow(rows, kListW, "Sub-Frame Decimals", "subframe-decimals",
+                static_cast<float>(cfg.subFrameDecimals), 0.f, 3.f, 1.f, 0, true, [weakSelf]() {
+                    if (auto self = weakSelf.lock(); self && !self->m_closed) self->updateVisualPreview();
+                });
             break;
         }
         case Tab::Audio: {
@@ -764,6 +799,18 @@ void ModMenuPopup::rebuildCurrentTab() {
                 "bucket-order"
             );
             addToggleRow(rows, kListW, "Show Last Input Badge", "show-last-badge", cfg.showLastBadge);
+
+            addSectionHeader(rows, kListW, "Sub-Frame Precision Card");
+            addToggleRow(rows, kListW, "Show Sub-Frame HUD Card", "subframe-precision-hud", cfg.subFramePrecisionHud);
+            addToggleRow(rows, kListW, "Show Toasts For Inputs", "subframe-toast", cfg.subFrameToast);
+            addCycleRow(
+                rows, kListW, "Toast Animation",
+                {"Slide", "Pop", "Slide + Pop"},
+                mod ? mod->getSettingValue<std::string>("subframe-toast-style") : "Slide + Pop",
+                "subframe-toast-style"
+            );
+            addSliderRow(rows, kListW, "Toast Hold Time (s)", "subframe-toast-duration",
+                static_cast<float>(cfg.toastDuration), 0.6f, 4.0f, 0.1f, 1);
 
             addSectionHeader(rows, kListW, "Right-Side Total Points");
             addToggleRow(rows, kListW, "Show Total Points HUD", "show-points-hud", cfg.showPointsHud);

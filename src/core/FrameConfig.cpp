@@ -1,4 +1,5 @@
 #include "FrameConfig.hpp"
+#include "../math/SubFrame.hpp"
 
 #include <algorithm>
 #include <array>
@@ -61,7 +62,26 @@ PointsFormula parsePointsFormula(std::string_view value) {
     if (value == "120Hz FP (2/N)") return PointsFormula::FP120Equivalent;
     if (value == "Squared (1/N^2)") return PointsFormula::Squared240;
     if (value == "60Hz Align Odds") return PointsFormula::Align60Hz;
+    if (value == "Sub-Frame Hard") return PointsFormula::SubFrameHard;
     return PointsFormula::FP240Inverse;
+}
+
+SubFrameMode parseSubFrameMode(std::string_view value) {
+    if (value == "Whole Frames (1, 2, 3)") return SubFrameMode::WholeFrames;
+    if (value == "Tick Offset (1+0.4)") return SubFrameMode::DecimalTick;
+    return SubFrameMode::DecimalFrame;
+}
+
+int parseToastStyle(std::string_view value) {
+    if (value == "Slide") return 0;
+    if (value == "Pop") return 1;
+    return 2;
+}
+
+CbfBadgeMode parseCbfBadgeMode(std::string_view value) {
+    if (value == "Off") return CbfBadgeMode::Off;
+    if (value == "Verbose") return CbfBadgeMode::Verbose;
+    return CbfBadgeMode::Compact;
 }
 
 NandlDisplayMode parseNandlDisplayMode(std::string_view value) {
@@ -313,10 +333,131 @@ double pointsForWindow(std::uint64_t frames, ModSettingsSnapshot const& cfg) {
             if (frames <= 4) return 1.0;
             if (frames < 8) return (8.0 - n) / 4.0;
             return 0.0;
+        case PointsFormula::SubFrameHard:
+            // Extra harsh curve for sub-frame hunting: 1F=1.00, 2F=0.125, 3F=0.037
+            return 1.0 / std::pow(n, 3.0);
         case PointsFormula::FP240Inverse:
         default:
             return 1.0 / n;
     }
+}
+
+RGBColor colorForWindow(std::uint64_t frames, double phase, ModSettingsSnapshot const& cfg) {
+    RGBColor base = colorForWindow(frames, cfg);
+    if (frames == 0) return base;
+
+    const double p = std::clamp(std::isfinite(phase) ? phase : 0.0, 0.0, 1.0);
+    // Blend toward the "worse" neighbour so 1.9F looks closer to 2F than 1.0F does.
+    // Weights are intentionally subtle: the tick bucket still dominates the hue.
+    const double shade = 1.0 - 0.28 * p;
+    auto scale = [&](std::uint8_t c) {
+        const double v = static_cast<double>(c) * shade;
+        return static_cast<std::uint8_t>(std::clamp(v, 0.0, 255.0));
+    };
+    return {scale(base.r), scale(base.g), scale(base.b)};
+}
+
+RGBColor subFrameRampColor(double t, ModSettingsSnapshot const& cfg) {
+    const double u = std::clamp(std::isfinite(t) ? t : 0.0, 0.0, 1.0);
+    struct Stop { double pos; RGBColor col; };
+    // Consistent with the NangdClassic 1F->5+ ramp so the heat map reads the same.
+    static constexpr Stop kStops[] = {
+        {0.00, {255, 0, 0}},
+        {0.20, {255, 127, 0}},
+        {0.40, {246, 255, 0}},
+        {0.60, {0, 255, 0}},
+        {0.80, {0, 235, 255}},
+        {1.00, {145, 85, 255}},
+    };
+
+    if (cfg.colorPreset == ColorPreset::Monochrome) {
+        const auto v = static_cast<std::uint8_t>(std::clamp(255.0 * (1.0 - u) + 120.0 * u, 0.0, 255.0));
+        return {v, v, v};
+    }
+
+    for (std::size_t i = 1; i < std::size(kStops); ++i) {
+        if (u > kStops[i].pos) continue;
+        const auto& a = kStops[i - 1];
+        const auto& b = kStops[i];
+        const double span = std::max(1e-9, b.pos - a.pos);
+        const double f = std::clamp((u - a.pos) / span, 0.0, 1.0);
+        auto mix = [&](std::uint8_t ca, std::uint8_t cb) {
+            return static_cast<std::uint8_t>(
+                std::clamp(static_cast<double>(ca) + (static_cast<double>(cb) - ca) * f, 0.0, 255.0)
+            );
+        };
+        return {mix(a.col.r, b.col.r), mix(a.col.g, b.col.g), mix(a.col.b, b.col.b)};
+    }
+    return kStops[std::size(kStops) - 1].col;
+}
+
+double framesToMillis(double frames) {
+    if (!std::isfinite(frames)) return 0.0;
+    return frames * math::kTickMillis;
+}
+
+std::string formatWindowLabel(
+    std::uint64_t frames,
+    double phase,
+    bool overLimit,
+    ModSettingsSnapshot const& cfg
+) {
+    if (overLimit) {
+        return ">" + std::to_string(std::max(0, cfg.maxWindowFrames)) + "F";
+    }
+    const double p = std::clamp(std::isfinite(phase) ? phase : 0.0, 0.0, 0.9999);
+    const int dec = std::clamp(cfg.subFrameDecimals, 0, 3);
+
+    switch (cfg.subFrameMode) {
+        case SubFrameMode::WholeFrames:
+            return std::to_string(frames);
+        case SubFrameMode::DecimalTick: {
+            const double whole = static_cast<double>(frames);
+            const double sub = p;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.0f+%.*f", whole, std::max(1, dec), sub);
+            return std::string(buf);
+        }
+        case SubFrameMode::DecimalFrame:
+        default:
+            return math::formatFrames(frames, p, false, cfg.maxWindowFrames, dec);
+    }
+}
+
+double windowScore(std::uint64_t frames, double phase, ModSettingsSnapshot const& cfg) {
+    if (frames == 0) return 0.0;
+    const double jitter = std::clamp(static_cast<double>(cfg.subFrameJitterFrames), 0.25, 8.0);
+    return math::subFramePrecisionScore(frames, phase, jitter);
+}
+
+std::string formatMarkerText(
+    std::uint64_t frames,
+    double phase,
+    bool isRelease,
+    bool overLimit,
+    int maxWindow,
+    bool distinguishRelease,
+    ModSettingsSnapshot const& cfg
+) {
+    std::string body;
+    if (overLimit) {
+        body = ">" + std::to_string(maxWindow);
+    } else if (frames == 0) {
+        body = "X";
+    } else {
+        body = formatWindowLabel(frames, phase, false, cfg);
+    }
+    if (isRelease && distinguishRelease) {
+        return "R" + body;
+    }
+    return body;
+}
+
+double pointsForWindow(std::uint64_t frames, double phase, ModSettingsSnapshot const& cfg) {
+    const double base = pointsForWindow(frames, cfg);
+    if (!cfg.subFrameScoring || base <= 0.0) return base;
+    const double hardness = std::clamp(static_cast<double>(cfg.subFrameJitterFrames), 0.25, 8.0);
+    return math::subFramePoints(base, frames, phase, hardness);
 }
 
 std::string formatMarkerText(

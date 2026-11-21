@@ -1,4 +1,5 @@
 #include "ProbeController.hpp"
+#include "../math/SubFrame.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -865,10 +866,14 @@ void ProbeController::scanRoute(
     PathState const& baseline,
     ScanAxis axis,
     std::uint64_t& windowFrames,
-    bool& hitLimit
+    bool& hitLimit,
+    std::uint64_t& earlyTicks,
+    std::uint64_t& lateTicks
 ) {
     windowFrames = 0;
     hitLimit = false;
+    earlyTicks = 0;
+    lateTicks = 0;
     const int maxWindow = std::clamp(m_cfg.maxWindowFrames, 1, 240);
 
     const int earlyPass = scanDepth(layer, job, baseline, axis, true, maxWindow);
@@ -876,6 +881,7 @@ void ProbeController::scanRoute(
     if (passed > maxWindow) {
         hitLimit = true;
         windowFrames = static_cast<std::uint64_t>(maxWindow);
+        earlyTicks = static_cast<std::uint64_t>(maxWindow - 1);
         return;
     }
 
@@ -885,9 +891,13 @@ void ProbeController::scanRoute(
     if (passed > maxWindow) {
         hitLimit = true;
         windowFrames = static_cast<std::uint64_t>(maxWindow);
+        earlyTicks = static_cast<std::uint64_t>(earlyPass);
+        lateTicks = static_cast<std::uint64_t>(maxWindow - 1 - earlyPass);
         return;
     }
 
+    earlyTicks = static_cast<std::uint64_t>(earlyPass);
+    lateTicks = static_cast<std::uint64_t>(latePass);
     windowFrames = static_cast<std::uint64_t>(passed);
 }
 
@@ -971,12 +981,16 @@ bool ProbeController::scanClick(PlayLayer* layer, ClickJob& job) {
 
     std::uint64_t pressWindow = 0;
     std::uint64_t releaseWindow = 0;
+    std::uint64_t pressEarly = 0;
+    std::uint64_t pressLate = 0;
+    std::uint64_t releaseEarly = 0;
+    std::uint64_t releaseLate = 0;
     bool pressOver = false;
     bool releaseOver = false;
     const bool ignoreRelease = !wantRelease || !canRelease || noReleaseWin(job);
 
     if (measurePress && wantPress && !skipped) {
-        scanRoute(layer, job, baseline, ScanAxis::Press, pressWindow, pressOver);
+        scanRoute(layer, job, baseline, ScanAxis::Press, pressWindow, pressOver, pressEarly, pressLate);
         if (pressOver && !checkedNoJump && (m_cfg.showOverLimit || m_cfg.showPrecisionHud)) {
             const auto compareFrames = std::max<std::int64_t>(1, baseline.resolveFrame - basePress);
             const auto extra = std::max(kPadding, compareFrames);
@@ -989,7 +1003,7 @@ bool ProbeController::scanClick(PlayLayer* layer, ClickJob& job) {
     bool checkedNoRelease = false;
     bool noReleaseDied = false;
     if (measureRelease && !ignoreRelease) {
-        scanRoute(layer, job, baseline, ScanAxis::Release, releaseWindow, releaseOver);
+        scanRoute(layer, job, baseline, ScanAxis::Release, releaseWindow, releaseOver, releaseEarly, releaseLate);
         if (releaseOver && (m_cfg.showOverLimit || m_cfg.showPrecisionHud)) {
             const auto baseRel = releaseFrameOf(job);
             const auto compareFrames = std::max<std::int64_t>(1, baseline.resolveFrame - baseRel);
@@ -1020,9 +1034,25 @@ bool ProbeController::scanClick(PlayLayer* layer, ClickJob& job) {
     if (measureRelease) job.releaseDone = true;
 
     if (showPress || showRelease || pressNandlIgnored || releaseNandlIgnored) {
+        // Sub-frame refinement: turn the whole-tick window into a continuous one
+        // using the geometric penetration fraction of the failing tick.
+        const auto pressInterp = math::interpolateWindow(
+            pressEarly, pressLate,
+            pressPhaseFor(layer, job),
+            pressOver && m_cfg.showOverLimit,
+            false
+        );
+        const auto releaseInterp = math::interpolateWindow(
+            releaseEarly, releaseLate,
+            releasePhaseFor(layer, job),
+            false,
+            releaseOver && m_cfg.showOverLimit
+        );
         recordMeasurement(
             layer, job,
             pressWindow, releaseWindow,
+            pressInterp.fraction, releaseInterp.fraction,
+            pressInterp.phase, releaseInterp.phase,
             showPress, showPressOver, pressNandlIgnored,
             showRelease, showReleaseOver, releaseNandlIgnored
         );

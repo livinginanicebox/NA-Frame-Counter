@@ -23,6 +23,8 @@ jobs:
         run: |
           g++ -std=c++23 -O2 -Wall -Wextra -Werror -Isrc \
             src/math/NandlCalculator.cpp \
+            src/math/SubFrame.cpp \
+            src/math/CbfDetector.cpp \
             src/core/FrameConfig.cpp \
             tests/test_core.cpp \
             -o test_core

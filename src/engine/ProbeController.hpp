@@ -9,6 +9,7 @@ enum class SentinelKind {
     Hud,
     PrecHud,
     PointsHud,
+    SubFrameHud,
     MarkerLayer,
 };
 
@@ -162,7 +163,9 @@ private:
         PathState const& baseline,
         ScanAxis axis,
         std::uint64_t& windowFrames,
-        bool& hitLimit
+        bool& hitLimit,
+        std::uint64_t& earlyTicks,
+        std::uint64_t& lateTicks
     );
     bool scanClick(PlayLayer* layer, ClickJob& job);
     void scanClicks(PlayLayer* layer);
@@ -172,6 +175,7 @@ private:
     void clearHUD();
     void resetHUD();
     void pulseHUD(std::uint64_t windowFrames, bool isRelease, bool overLimit);
+    void pulseSubFrameGauge(std::uint64_t windowFrames, double phase, bool isRelease);
     void buildPrecisionHUD();
     void clearPrecisionHUD();
     void updatePrecisionHUD();
@@ -181,10 +185,12 @@ private:
     void updatePointsHUD(double deltaPoints = 0.0, std::uint64_t windowFrames = 0);
     void recomputePointsAndStats();
     void recordNandlAndUpdate(std::int64_t actionFrame, std::uint64_t windowFrames, bool isRelease, bool ignored = false);
+    void recordNandlAndUpdate(std::int64_t actionFrame, double windowFrames, bool isRelease, bool ignored = false);
 
     cocos2d::CCPoint ringScreenPos(PlayLayer* layer, cocos2d::CCPoint objectPos) const;
     cocos2d::CCNode* createRingMarkerNode(
         std::uint64_t windowFrames,
+        double phase,
         bool isRelease,
         bool overLimit,
         cocos2d::CCDrawNode*& outRing,
@@ -196,6 +202,7 @@ private:
         PlayLayer* layer,
         cocos2d::CCPoint const& position,
         std::uint64_t windowFrames,
+        double phase,
         bool isRelease,
         bool overLimit,
         bool withSound
@@ -205,12 +212,44 @@ private:
         ClickJob const& job,
         std::uint64_t pressWindow,
         std::uint64_t releaseWindow,
+        double pressFraction,
+        double releaseFraction,
+        double pressPhase,
+        double releasePhase,
         bool showPress,
         bool pressOver,
         bool pressNandlIgnored,
         bool showRelease,
         bool releaseOver,
         bool releaseNandlIgnored
+    );
+
+    // Sub-frame geometry for a click/release, computed against the object the
+    // input actually collided with (or the jump arc for aerial presses).
+    double pressPhaseFor(PlayLayer* layer, ClickJob const& job) const;
+    double releasePhaseFor(PlayLayer* layer, ClickJob const& job) const;
+
+    // Sub-frame HUD / toast / stats helpers (ProbeHUD.cpp + ProbeToast.cpp)
+    void buildSubFrameHUD();
+    void clearSubFrameHUD();
+    void updateSubFrameHUD();
+    void resetSubFrameHUD();
+    void recordSubFrameSample(
+        std::uint64_t frames,
+        double phase,
+        double points,
+        bool isRelease,
+        bool overLimit,
+        math::CbfAnalysis const& cbf
+    );
+    void showSessionReportToast();
+    void copySessionReportToClipboard();
+    void maybeToastMeasurement(
+        std::uint64_t frames,
+        double phase,
+        bool isRelease,
+        bool overLimit,
+        math::CbfAnalysis const& cbf
     );
 
     // State
@@ -292,6 +331,26 @@ private:
     std::vector<CountRow> m_counters;
     std::vector<std::uint64_t> m_measuredWindows; // for rebuilding HUD mid-attempt
     std::deque<RingMarker> m_markers;
+
+    // Sub-frame precision state
+    cocos2d::CCNode* m_subFrameHud = nullptr;
+    cocos2d::CCLabelBMFont* m_subFrameMainLabel = nullptr;
+    cocos2d::CCLabelBMFont* m_subFrameSubLabel = nullptr;
+    cocos2d::CCLabelBMFont* m_subFrameCbfLabel = nullptr;
+    cocos2d::CCDrawNode* m_subFrameGauge = nullptr;
+    cocos2d::CCDrawNode* m_subFrameRamp = nullptr;
+    cocos2d::CCLayerColor* m_subFrameAccent = nullptr;
+    CleanupSentinel* m_subFrameSentinel = nullptr;
+    std::deque<SubFrameSample> m_subFrameSamples;
+    std::vector<math::CbfSample> m_cbfSamples;
+
+    std::string m_lastReport;
+    std::string m_lastReportCsv;
+    double m_lastCbfToastAt = 0.0;
+    double m_lastCbfCooldown = 0.0;
+    bool m_cbfToastArmed = true;
+    std::uint64_t m_subFrameToastSerial = 0;
+    bool m_lastMilestoneStreak = false;
 
     // NaNDL live run state
     std::vector<math::InputTiming> m_nandlInputs;

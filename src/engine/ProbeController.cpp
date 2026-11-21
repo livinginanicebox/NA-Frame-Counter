@@ -1,6 +1,8 @@
 #include "ProbeController.hpp"
+#include "SubFrameGeometry.hpp"
 #include "../audio/SoundPlayer.hpp"
 #include "../core/SettingsBridge.hpp"
+#include "../ui/Toast.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -51,6 +53,7 @@ void ProbeController::onSettingsChanged() {
             clearHUD();
             clearPrecisionHUD();
             clearPointsHUD();
+            clearSubFrameHUD();
             clearMarkers();
         } else {
             if (!m_nandlInputs.empty()) {
@@ -69,6 +72,8 @@ void ProbeController::onSettingsChanged() {
             buildHUD();
             buildPrecisionHUD();
             buildPointsHUD();
+            clearSubFrameHUD();
+            buildSubFrameHUD();
         }
     }
 }
@@ -98,6 +103,18 @@ void ProbeController::onSentinelDestroyed(SentinelKind kind, void* expected) {
                 m_pointsRightLabel = nullptr;
             }
             break;
+        case SentinelKind::SubFrameHud:
+            if (m_subFrameHud == expected) {
+                m_subFrameSentinel = nullptr;
+                m_subFrameHud = nullptr;
+                m_subFrameMainLabel = nullptr;
+                m_subFrameSubLabel = nullptr;
+                m_subFrameCbfLabel = nullptr;
+                m_subFrameGauge = nullptr;
+                m_subFrameRamp = nullptr;
+                m_subFrameAccent = nullptr;
+            }
+            break;
         case SentinelKind::MarkerLayer:
             if (m_markerLayer == expected) {
                 m_markerSentinel = nullptr;
@@ -111,6 +128,7 @@ void ProbeController::onSentinelDestroyed(SentinelKind kind, void* expected) {
                 m_hudSentinel = nullptr;
                 m_precHudSentinel = nullptr;
                 m_pointsSentinel = nullptr;
+                m_subFrameSentinel = nullptr;
                 m_markerSentinel = nullptr;
 
                 m_hud = nullptr;
@@ -120,6 +138,13 @@ void ProbeController::onSentinelDestroyed(SentinelKind kind, void* expected) {
                 m_pointsValueLabel = nullptr;
                 m_pointsLeftLabel = nullptr;
                 m_pointsRightLabel = nullptr;
+                m_subFrameHud = nullptr;
+                m_subFrameMainLabel = nullptr;
+                m_subFrameSubLabel = nullptr;
+                m_subFrameCbfLabel = nullptr;
+                m_subFrameGauge = nullptr;
+                m_subFrameRamp = nullptr;
+                m_subFrameAccent = nullptr;
                 m_markerLayer = nullptr;
                 m_counters.clear();
                 m_markers.clear();
@@ -200,6 +225,7 @@ void ProbeController::startLevel(PlayLayer* layer) {
         buildHUD();
         buildPrecisionHUD();
         buildPointsHUD();
+        buildSubFrameHUD();
     }
 }
 
@@ -237,6 +263,8 @@ void ProbeController::resetAttemptState() {
     resetHUD();
     updatePrecisionHUD();
     resetPointsHUD();
+    resetSubFrameHUD();
+    ui::Toast::clearAll();
 }
 
 void ProbeController::resetAllState() {
@@ -250,6 +278,10 @@ void ProbeController::resetAllState() {
     clearHUD();
     clearPrecisionHUD();
     clearPointsHUD();
+    clearSubFrameHUD();
+    ui::Toast::clearAll();
+    m_subFrameSamples.clear();
+    m_cbfSamples.clear();
 
     auto* levelSentinel = m_levelSentinel;
     m_levelSentinel = nullptr;
@@ -356,6 +388,8 @@ void ProbeController::completeLevel(PlayLayer* layer) {
     m_clockReady = false;
     m_started = false;
     dropProbe();
+
+    showSessionReportToast();
 }
 
 void ProbeController::ensureStarted(PlayLayer* layer) {
@@ -433,6 +467,8 @@ void ProbeController::afterTick(PlayLayer* layer, float dt) {
         if (!m_hud && m_cfg.showCounters) buildHUD();
         if (!m_precHud && m_cfg.showPrecisionHud) buildPrecisionHUD();
         if (!m_pointsHud && m_cfg.showPointsHud) buildPointsHUD();
+        if (!m_subFrameHud && m_cfg.subFramePrecisionHud) buildSubFrameHUD();
+        ui::Toast::pump(dt);
     }
 
     if (m_levelDone || m_platformer || !m_cfg.enabled) return;
@@ -719,12 +755,40 @@ void ProbeController::onJumpActive(PlayerObject* player, RingObject* ring) {
     const bool wasBuffered = player->m_jumpBuffered || player->m_wasJumpBuffered;
     const bool tryHolding = canHoldCube(player);
 
+    // Capture sub-frame geometry while we still have the live player + object.
+    // Travel this tick comes from the player's own speed; GD moves the object
+    // layer, so the player's local X delta is the right frame.
+    const float speedX = std::abs(static_cast<float>(player->getCurrentXVelocity()));
+    const auto previousPos = CCPoint{activationPos.x - speedX, activationPos.y};
+    auto capturePhase = [&](ClickJob& job, bool release) {
+        GameObject* target = fromRing ? static_cast<GameObject*>(ring) : nullptr;
+        const auto rect = target ? target->getObjectRect() : CCRect{0.f, 0.f, 0.f, 0.f};
+        const auto geom = measureSubFrame(
+            activationPos,
+            previousPos,
+            rect,
+            !fromRing && (player->m_stateOnGround != 0 || player->m_isOnGround2),
+            player->getYVelocity(),
+            0.5
+        );
+        if (release) {
+            job.releasePhase = static_cast<float>(geom.phase);
+            job.releasePhaseKnown = geom.valid;
+            job.pressSubFrame = static_cast<float>(geom.offsetFrames);
+        } else {
+            job.pressPhase = static_cast<float>(geom.phase);
+            job.pressPhaseKnown = geom.valid;
+            job.pressSubFrame = static_cast<float>(geom.offsetFrames);
+        }
+    };
+
     if (fromRing) {
         for (auto it = m_clicks.rbegin(); it != m_clicks.rend(); ++it) {
             if (!it->activated || it->player1 != isPlayer1) continue;
             if (it->activationFrame < activationFrame) break;
             if (it->activationFrame != activationFrame) continue;
             confirmJump(*it, activationFrame, activationPos, true, wasBuffered, ring, tryHolding);
+            capturePhase(*it, false);
             return;
         }
     }
@@ -733,6 +797,7 @@ void ProbeController::onJumpActive(PlayerObject* player, RingObject* ring) {
         if (it->activated || it->player1 != isPlayer1) continue;
         if (it->pressFrame > activationFrame) continue;
         confirmJump(*it, activationFrame, activationPos, fromRing, wasBuffered, ring, tryHolding);
+        capturePhase(*it, false);
         return;
     }
 

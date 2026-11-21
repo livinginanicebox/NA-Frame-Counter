@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/FrameConfig.hpp"
+#include "../math/CbfDetector.hpp"
 #include "../math/NandlCalculator.hpp"
 #include <Geode/Geode.hpp>
 #include <Geode/cocos/draw_nodes/CCDrawNode.h>
@@ -193,6 +194,29 @@ struct ClickJob {
     bool synthesizedPreHold = false;
     std::uint64_t pressControlOrder = kNoOrder;
     std::uint64_t releaseControlOrder = kNoOrder;
+
+    // Sub-frame geometry captured from the live object hitboxes at input time.
+    float pressPhase = 0.f;
+    float releasePhase = 0.f;
+    bool pressPhaseKnown = false;
+    bool releasePhaseKnown = false;
+    float pressSubFrame = 0.f;   // signed distance from the tick edge, in frames
+    bool cbfPress = false;
+    bool cbfRelease = false;
+    std::size_t lastWindowIndex = kNoOrder;
+};
+
+// One measured input, kept for the precision HUD, CBF analysis and heat map.
+struct SubFrameSample {
+    std::uint64_t frames = 0;
+    double phase = 0.0;
+    bool isRelease = false;
+    bool overLimit = false;
+    bool cbf = false;
+    bool cbfRequired = false;
+    double score = 0.0;
+    double points = 0.0;
+    std::int64_t frame = 0;
 };
 
 struct HistorySlot {
@@ -242,6 +266,7 @@ struct RingMarker {
     bool distinguishRelease = true;
     cocos2d::CCPoint worldPosition{0.f, 0.f};
     float age = 0.f;
+    double phase = 0.0;
 };
 
 struct ActiveState {
@@ -273,6 +298,22 @@ struct SessionStats {
     double totalPoints = 0.0;
     double bestPoints = 0.0;
     double lastAddedPoints = 0.0;
+
+    // Sub-frame precision session state
+    double lastPhase = 0.0;
+    double lastScore = 0.0;
+    double bestScore = 0.0;
+    double avgScore = 0.0;
+    double phaseSum = 0.0;
+    std::uint64_t subFrameCount = 0;
+    std::uint64_t subFramePerfects = 0;   // measured at phase <= 0.25
+    std::uint64_t cbfCount = 0;
+    std::uint64_t cbfRequiredCount = 0;
+    bool lastWasCbf = false;
+    bool lastCbfRequired = false;
+    std::uint64_t lastMillisMicro = 0;    // window length in microseconds
+    std::uint64_t streak = 0;             // consecutive 1F inputs
+    std::uint64_t bestStreak = 0;
 };
 
 }

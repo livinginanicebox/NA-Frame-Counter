@@ -69,6 +69,19 @@ enum class PointsFormula : int {
     FP120Equivalent = 2,
     Squared240 = 3,
     Align60Hz = 4,
+    SubFrameHard = 5,
+};
+
+enum class SubFrameMode : int {
+    WholeFrames = 0,
+    DecimalFrame = 1,
+    DecimalTick = 2,
+};
+
+enum class CbfBadgeMode : int {
+    Off = 0,
+    Compact = 1,
+    Verbose = 2,
 };
 
 enum class NandlDisplayMode : int {
@@ -120,6 +133,20 @@ struct ModSettingsSnapshot {
     bool scaleWithZoom = false;
     bool distinguishRelease = true;
 
+    // Sub-Frame Precision (fractional frame windows, 0.4F / 3.2F / 1.3F)
+    SubFrameMode subFrameMode = SubFrameMode::DecimalFrame;
+    int subFrameDecimals = 1;
+    bool subFramePrecisionHud = true;
+    bool subFrameToast = true;
+    CbfBadgeMode cbfBadge = CbfBadgeMode::Compact;
+    bool cbfIncludeReleases = true;
+    float cbfGuardFrames = 0.10f;
+    float subFrameJitterFrames = 1.0f;
+    bool subFrameScoring = true;
+    bool markerHeatmap = true;
+    int toastStyle = 2;      // 0 slide, 1 pop, 2 slide+pop
+    float toastDuration = 1.9f;
+
     // Audio & Pitch
     bool dingSounds = true;
     SoundStyle soundStyle = SoundStyle::ClassicBell;
@@ -156,6 +183,9 @@ PitchCurve parsePitchCurve(std::string_view value);
 HudCorner parseHudCorner(std::string_view value);
 PointsCorner parsePointsCorner(std::string_view value);
 PointsFormula parsePointsFormula(std::string_view value);
+SubFrameMode parseSubFrameMode(std::string_view value);
+int parseToastStyle(std::string_view value);
+CbfBadgeMode parseCbfBadgeMode(std::string_view value);
 NandlDisplayMode parseNandlDisplayMode(std::string_view value);
 
 char const* soundAssetFilename(SoundStyle style);
@@ -165,5 +195,43 @@ RGBColor colorForWindow(std::uint64_t frames, ModSettingsSnapshot const& cfg);
 float pitchForWindow(std::uint64_t frames, ModSettingsSnapshot const& cfg);
 double pointsForWindow(std::uint64_t frames, ModSettingsSnapshot const& cfg);
 std::string formatMarkerText(std::uint64_t frames, bool isRelease, bool overLimit, int maxWindow, bool distinguishRelease);
+std::string formatMarkerText(
+    std::uint64_t frames,
+    double phase,
+    bool isRelease,
+    bool overLimit,
+    int maxWindow,
+    bool distinguishRelease,
+    ModSettingsSnapshot const& cfg
+);
+
+// Color lookup that additionally varies with the sub-frame phase, so a 1.0F
+// input and a 1.9F input inside the same 2F bucket are visually distinct.
+RGBColor colorForWindow(
+    std::uint64_t frames,
+    double phase,
+    ModSettingsSnapshot const& cfg
+);
+
+// Continuous gradient for the sub-frame heat map ramp (0 = best, 1 = worst).
+RGBColor subFrameRampColor(double t, ModSettingsSnapshot const& cfg);
+
+// Human label for a measured window using the user's sub-frame display mode.
+std::string formatWindowLabel(
+    std::uint64_t frames,
+    double phase,
+    bool overLimit,
+    ModSettingsSnapshot const& cfg
+);
+
+// Milliseconds for a fractional frame count (1F = 4.1667 ms).
+double framesToMillis(double frames);
+
+// 0..100 combined score for the precision HUD.
+double windowScore(std::uint64_t frames, double phase, ModSettingsSnapshot const& cfg);
+
+// Sub-frame aware points: the whole-frame formula, additionally scaled by the
+// phase penalty when "Sub-Frame Scoring" is enabled.
+double pointsForWindow(std::uint64_t frames, double phase, ModSettingsSnapshot const& cfg);
 
 }

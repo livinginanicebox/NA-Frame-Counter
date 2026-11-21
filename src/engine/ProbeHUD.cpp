@@ -1,6 +1,7 @@
 #include "ProbeController.hpp"
 #include "../audio/SoundPlayer.hpp"
 
+#include <Geode/ui/NineSlice.hpp>
 #include <Geode/utils/string.hpp>
 #include <fmt/format.h>
 #include <algorithm>
@@ -452,11 +453,20 @@ void ProbeController::recordNandlAndUpdate(
     bool isRelease,
     bool ignored
 ) {
-    if (!ignored && windowFrames == 0) return;
+    recordNandlAndUpdate(actionFrame, static_cast<double>(windowFrames), isRelease, ignored);
+}
+
+void ProbeController::recordNandlAndUpdate(
+    std::int64_t actionFrame,
+    double windowFrames,
+    bool isRelease,
+    bool ignored
+) {
+    if (!ignored && windowFrames <= 0.0) return;
 
     math::InputTiming timing;
     timing.frame = static_cast<double>(std::max<std::int64_t>(0, actionFrame));
-    timing.windowFrames = ignored ? 0.0 : static_cast<double>(windowFrames);
+    timing.windowFrames = ignored ? 0.0 : std::max(0.0, windowFrames);
     timing.swiftCount = 1;
     timing.isRelease = isRelease;
     timing.ignored = ignored;
@@ -670,11 +680,18 @@ void ProbeController::recomputePointsAndStats() {
     m_stats.attemptFramePerfects = 0;
     m_stats.lastAddedPoints = 0.0;
 
+    for (const auto& sample : m_subFrameSamples) {
+        if (sample.frames == 0 || sample.overLimit) continue;
+        ++m_stats.attemptMeasured;
+        if (sample.frames == 1) ++m_stats.attemptFramePerfects;
+        m_stats.totalPoints += core::pointsForWindow(sample.frames, sample.phase, m_cfg);
+    }
     for (const auto w : m_measuredWindows) {
         if (w == 0) continue;
+        if (!m_subFrameSamples.empty()) break; // already covered above
         ++m_stats.attemptMeasured;
         if (w == 1) ++m_stats.attemptFramePerfects;
-        m_stats.totalPoints += core::pointsForWindow(w, m_cfg);
+        m_stats.totalPoints += core::pointsForWindow(w, 0.0, m_cfg);
     }
     if (m_stats.totalPoints > m_stats.bestPoints) {
         m_stats.bestPoints = m_stats.totalPoints;
@@ -712,6 +729,7 @@ static void drawRingCircles(
 
 CCNode* ProbeController::createRingMarkerNode(
     std::uint64_t windowFrames,
+    double phase,
     bool isRelease,
     bool overLimit,
     CCDrawNode*& outRing,
@@ -724,7 +742,9 @@ CCNode* ProbeController::createRingMarkerNode(
     auto* ring = CCDrawNode::create();
     if (!marker || !ring) return nullptr;
 
-    const auto rgb = core::colorForWindow(windowFrames, m_cfg);
+    const auto rgb = m_cfg.markerHeatmap
+        ? core::colorForWindow(windowFrames, phase, m_cfg)
+        : core::colorForWindow(windowFrames, m_cfg);
     const auto ccCol = toCCColor(rgb);
     const float radius = std::clamp(m_cfg.circleRadius, 5.f, 26.f);
     const float border = std::clamp(m_cfg.circleThickness, 1.f, 5.f);
@@ -735,10 +755,12 @@ CCNode* ProbeController::createRingMarkerNode(
 
     const auto text = core::formatMarkerText(
         windowFrames,
+        phase,
         isRelease,
         overLimit,
         m_cfg.maxWindowFrames,
-        m_cfg.distinguishRelease
+        m_cfg.distinguishRelease,
+        m_cfg
     );
 
     if (auto* label = CCLabelBMFont::create(text.c_str(), "bigFont.fnt")) {
@@ -847,6 +869,7 @@ void ProbeController::attachMarker(
     PlayLayer* layer,
     CCPoint const& position,
     std::uint64_t windowFrames,
+    double phase,
     bool isRelease,
     bool overLimit,
     bool withSound
@@ -863,9 +886,34 @@ void ProbeController::attachMarker(
     m_stats.lastWasRelease = isRelease;
     m_stats.lastOverLimit = overLimit;
 
+    // Sub-frame / CBF classification for this measurement.
+    math::CbfConfig cbfCfg;
+    cbfCfg.enabled = m_cfg.cbfBadge != core::CbfBadgeMode::Off;
+    cbfCfg.guardFrames = std::clamp(static_cast<double>(m_cfg.cbfGuardFrames), 0.0, 0.5);
+    cbfCfg.requireFrames = std::max(cbfCfg.guardFrames, 0.25);
+    cbfCfg.includeReleases = m_cfg.cbfIncludeReleases;
+
+    math::CbfSample cbfSample;
+    cbfSample.isRelease = isRelease;
+    cbfSample.frames = windowFrames;
+    cbfSample.phase = phase;
+    const auto cbf = math::analyzeCbf(cbfSample, cbfCfg);
+
+    if (m_cfg.cbfIncludeReleases || !isRelease) {
+        m_cbfSamples.push_back(cbfSample);
+    }
+    if (cbf.verdict == math::CbfVerdict::Cbf || cbf.verdict == math::CbfVerdict::CbfRequired) {
+        ++m_stats.cbfCount;
+        if (cbf.required) ++m_stats.cbfRequiredCount;
+    }
+    m_stats.lastWasCbf = (cbf.verdict == math::CbfVerdict::Cbf ||
+        cbf.verdict == math::CbfVerdict::CbfRequired);
+    m_stats.lastCbfRequired = cbf.required;
+
+    double pts = 0.0;
     if (!overLimit && windowFrames >= 1) {
         m_measuredWindows.push_back(windowFrames);
-        const double pts = core::pointsForWindow(windowFrames, m_cfg);
+        pts = core::pointsForWindow(windowFrames, phase, m_cfg);
         m_stats.totalPoints += pts;
         m_stats.lastAddedPoints = pts;
         if (m_stats.totalPoints > m_stats.bestPoints) {
@@ -874,7 +922,11 @@ void ProbeController::attachMarker(
         updatePointsHUD(pts, windowFrames);
     }
 
+    recordSubFrameSample(windowFrames, phase, pts, isRelease, overLimit, cbf);
+    maybeToastMeasurement(windowFrames, phase, isRelease, overLimit, cbf);
+
     pulseHUD(windowFrames, isRelease, overLimit);
+    pulseSubFrameGauge(windowFrames, phase, isRelease);
     if (withSound && !overLimit && windowFrames >= 1) {
         audio::SoundPlayer::get().playForWindow(windowFrames, m_cfg, false);
     }
@@ -896,7 +948,7 @@ void ProbeController::attachMarker(
 
     CCDrawNode* ring = nullptr;
     CCLabelBMFont* label = nullptr;
-    auto* marker = createRingMarkerNode(windowFrames, isRelease, overLimit, ring, label);
+    auto* marker = createRingMarkerNode(windowFrames, phase, isRelease, overLimit, ring, label);
     if (!marker) return;
 
     m_markerLayer->addChild(marker, 1);
@@ -904,13 +956,16 @@ void ProbeController::attachMarker(
     item.node = marker;
     item.ring = ring;
     item.label = label;
-    item.color = toCCColor(core::colorForWindow(windowFrames, m_cfg));
+    item.color = toCCColor(m_cfg.markerHeatmap
+        ? core::colorForWindow(windowFrames, phase, m_cfg)
+        : core::colorForWindow(windowFrames, m_cfg));
     item.radius = std::clamp(m_cfg.circleRadius, 5.f, 26.f);
     item.border = std::clamp(m_cfg.circleThickness, 1.f, 5.f);
     item.isRelease = isRelease;
     item.distinguishRelease = m_cfg.distinguishRelease;
     item.worldPosition = position;
     item.age = 0.f;
+    item.phase = phase;
     m_markers.push_back(item);
 
     while (m_markers.size() > kMaxVisibleMarkers) {
@@ -927,6 +982,10 @@ void ProbeController::recordMeasurement(
     ClickJob const& job,
     std::uint64_t pressWindow,
     std::uint64_t releaseWindow,
+    double pressFraction,
+    double releaseFraction,
+    double pressPhase,
+    double releasePhase,
     bool showPress,
     bool pressOver,
     bool pressNandlIgnored,
@@ -949,19 +1008,29 @@ void ProbeController::recordMeasurement(
         const auto pos = (job.activationPos.x != 0.f || job.activationPos.y != 0.f)
             ? job.activationPos
             : job.pressPos;
-        attachMarker(layer, pos, pressWindow, false, pressOver, !mergeSound);
+        attachMarker(layer, pos, pressWindow, pressPhase, false, pressOver, !mergeSound);
     }
     if ((showPress && !pressOver) || pressNandlIgnored) {
-        recordNandlAndUpdate(pressFrameOf(job), pressWindow, false, pressNandlIgnored);
+        recordNandlAndUpdate(
+            pressFrameOf(job),
+            static_cast<double>(pressWindow) + (pressOver ? 0.0 : pressFraction),
+            false,
+            pressNandlIgnored
+        );
     }
 
     if (showRelease) {
         const auto relFrame = releaseFrameOf(job);
         const auto releasePos = (relFrame != job.releaseFrame) ? job.activationPos : job.releasePos;
-        attachMarker(layer, releasePos, releaseWindow, true, releaseOver, !mergeSound);
+        attachMarker(layer, releasePos, releaseWindow, releasePhase, true, releaseOver, !mergeSound);
     }
     if ((showRelease && !releaseOver) || releaseNandlIgnored) {
-        recordNandlAndUpdate(releaseFrameOf(job), releaseWindow, true, releaseNandlIgnored);
+        recordNandlAndUpdate(
+            releaseFrameOf(job),
+            static_cast<double>(releaseWindow) + (releaseOver ? 0.0 : releaseFraction),
+            true,
+            releaseNandlIgnored
+        );
     }
 
     if (mergeSound && soundFrames > 0) {

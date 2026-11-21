@@ -1,5 +1,7 @@
 #include "../src/core/FrameConfig.hpp"
+#include "../src/math/CbfDetector.hpp"
 #include "../src/math/NandlCalculator.hpp"
+#include "../src/math/SubFrame.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -268,6 +270,195 @@ void testPointsScoring() {
     expectNear(pointsForWindow(8, cfg), 0.0, 1e-9, "Align60 8F = 0.00");
 }
 
+
+void testSubFrameSplitting() {
+    // 3.2F -> 3 whole ticks + 0.2 phase
+    auto w = splitFrameCount(3.2);
+    assert(w.frames == 3);
+    expectNear(w.phase, 0.2, 1e-9, "3.2F phase");
+
+    w = splitFrameCount(0.4);
+    assert(w.frames == 0);
+    expectNear(w.phase, 0.4, 1e-9, "0.4F phase");
+
+    w = splitFrameCount(1.3);
+    assert(w.frames == 1);
+    expectNear(w.phase, 0.3, 1e-6, "1.3F phase");
+
+    // No sub-tick component must never round up into the next tick.
+    w = splitFrameCount(2.0);
+    assert(w.frames == 2);
+    expectNear(w.phase, 0.0, 1e-12, "2.0F phase");
+
+    // Degenerate inputs stay well-defined.
+    w = splitFrameCount(-1.0);
+    assert(w.frames == 0 && w.phase == 0.0);
+    w = splitFrameCount(0.0);
+    assert(w.frames == 0 && w.phase == 0.0);
+    w = splitFrameCount(std::nan(""));
+    assert(w.frames == 0 && w.phase == 0.0);
+}
+
+void testSubFrameFormatting() {
+    ModSettingsSnapshot cfg;
+    cfg.subFrameDecimals = 2;
+
+    cfg.subFrameMode = SubFrameMode::DecimalFrame;
+    assert(formatWindowLabel(1, 0.4, false, cfg) == "1.4");
+    assert(formatWindowLabel(3, 0.2, false, cfg) == "3.2");
+    assert(formatWindowLabel(1, 0.0, false, cfg) == "1");
+    assert(formatWindowLabel(12, 0.0, true, cfg) == ">12F");
+
+    cfg.subFrameMode = SubFrameMode::WholeFrames;
+    assert(formatWindowLabel(3, 0.9, false, cfg) == "3");
+
+    cfg.subFrameMode = SubFrameMode::DecimalTick;
+    assert(formatWindowLabel(1, 0.4, false, cfg) == "1+0.40");
+
+    // Marker texts keep the release prefix and the over-limit form.
+    cfg.subFrameMode = SubFrameMode::DecimalFrame;
+    assert(formatMarkerText(1, 0.4, true, false, 12, true, cfg) == "R1.4");
+    assert(formatMarkerText(1, 0.4, false, false, 12, true, cfg) == "1.4");
+    assert(formatMarkerText(0, 0.0, false, true, 12, true, cfg) == ">12");
+    assert(formatMarkerText(0, 0.0, true, true, 12, true, cfg) == "R>12");
+
+    // Milliseconds: one 240 Hz tick = 4.1667 ms
+    expectNear(framesToMillis(1.0), 1000.0 / 240.0, 1e-9, "1F in ms");
+    expectNear(framesToMillis(0.4), 0.4 * 1000.0 / 240.0, 1e-9, "0.4F in ms");
+}
+
+void testSubFrameScoring() {
+    // Align score decays with both window width and phase depth.
+    const double perfect = subFrameAlignScore(1, 0.0);
+    const double late = subFrameAlignScore(1, 0.5);
+    const double wide = subFrameAlignScore(4, 0.0);
+    expectNear(perfect, 100.0, 1e-9, "1F phase0 align score");
+    assert(late < perfect);
+    assert(wide < perfect);
+    assert(subFrameAlignScore(3, 0.2) > subFrameAlignScore(3, 0.9));
+
+    // Precision score is bounded and monotone in window width.
+    const double p1 = subFramePrecisionScore(1, 0.0, 1.0);
+    const double p2 = subFramePrecisionScore(2, 0.0, 1.0);
+    const double p9 = subFramePrecisionScore(9, 0.0, 1.0);
+    assert(p1 <= 100.0 && p1 > p2 && p2 > p9 && p9 >= 0.0);
+
+    // Hit chance: a 1F window in a 1F jitter budget is a certainty, 1F in 4F is 25%.
+    expectNear(subFrameHitChance(1.0, 1.0), 1.0, 1e-9, "hit chance 1/1");
+    expectNear(subFrameHitChance(1.0, 4.0), 0.25, 1e-9, "hit chance 1/4");
+    expectNear(subFrameHitChance(6.0, 4.0), 1.0, 1e-9, "hit chance clamped");
+
+    // Sub-frame points: a phase-0 input gets the full base value, a mid-tick one
+    // is docked, and 1F always beats 2F regardless of phase.
+    expectNear(subFramePoints(1.0, 1, 0.0, 1.0), 1.0, 1e-9, "points full at phase 0");
+    const double mid = subFramePoints(1.0, 1, 0.5, 1.0);
+    assert(mid < 1.0 && mid > 0.8);
+    assert(subFramePoints(0.5, 2, 0.0, 1.0) < subFramePoints(1.0, 1, 0.5, 1.0));
+    expectNear(subFramePoints(5.0, 0, 0.0, 1.0), 0.0, 1e-12, "frame 0 gives no points");
+    expectNear(subFramePoints(5.0, 2, 0.0, 0.0), 5.0, 1e-12, "hardness 0 disables penalty");
+
+    // clip classification
+    assert(classifyClip(1, 0.05, 1.0) == ClipSide::Early);
+    assert(classifyClip(1, 0.90, 1.0) == ClipSide::Late);
+    assert(classifyClip(1, 0.50, 1.0) == ClipSide::None);
+    assert(classifyClip(4, 0.0, 1.0) == ClipSide::Late);
+    assert(classifyClip(0, 0.0, 1.0) == ClipSide::Both);
+    assert(std::string(clipSideName(ClipSide::Early)) == "early");
+}
+
+void testInterpolatedWindows() {
+    // 1 + 0 early + 2 late ticks, half-penetrated failing tick: the late side
+    // gains half a tick, i.e. a 3.5F continuous window.
+    auto w = interpolateWindow(0, 2, 0.5, false, false);
+    expectNear(w.windowFrames, 3.5, 1e-9, "3.5F interpolated window");
+    expectNear(w.fraction, 0.5, 1e-9, "3.5F fraction");
+    expectNear(w.earlyFrames, 0.5, 1e-9, "3.5F early slack");
+
+    // Single tick: the geometric fraction is the whole story -> 1.xF
+    w = interpolateWindow(0, 0, 0.4, false, false);
+    expectNear(w.windowFrames, 1.4, 1e-9, "1.4F single-tick window");
+    expectNear(w.fraction, 0.4, 1e-9, "1.4F fraction");
+
+    // Boundary fraction is clamped, so we never report the next whole tick.
+    w = interpolateWindow(0, 0, 1.7, false, false);
+    assert(w.fraction < 1.0);
+
+    // Limit hits keep the whole-tick window and flag the tight side.
+    w = interpolateWindow(0, 11, 0.5, false, true);
+    expectNear(w.windowFrames, 12.0, 1e-9, "limit window stays whole");
+    assert(w.tightSide == ClipSide::Late);
+
+    // Early-bound side is reported when the early slack is smaller.
+    w = interpolateWindow(1, 4, 0.5, false, false);
+    expectNear(w.windowFrames, 6.5, 1e-9, "6.5F asymmetric window");
+    assert(w.tightSide == ClipSide::Early);
+
+    // A 1F window with a perfectly-timed input stays >= 1F.
+    w = interpolateWindow(0, 0, 0.0, false, false);
+    assert(w.windowFrames >= 1.0);
+}
+
+void testCbfDetection() {
+    CbfConfig cfg;
+    cfg.enabled = true;
+    cfg.guardFrames = 0.10;
+    cfg.requireFrames = 0.25;
+
+    auto sample = [](std::uint64_t frames, double phase, bool release = false) {
+        CbfSample s;
+        s.frames = frames;
+        s.phase = phase;
+        s.isRelease = release;
+        return s;
+    };
+
+    // Exactly on the tick: no CBF.
+    auto r = analyzeCbf(sample(1, 0.0), cfg);
+    assert(r.verdict == CbfVerdict::Boundary);
+    assert(!r.required);
+
+    // Inside the guard band: near boundary, not flagged.
+    r = analyzeCbf(sample(1, 0.05), cfg);
+    assert(r.verdict == CbfVerdict::NearBoundary);
+    assert(!r.required);
+
+    // Genuinely between frames.
+    r = analyzeCbf(sample(1, 0.30), cfg);
+    assert(r.verdict == CbfVerdict::Cbf || r.verdict == CbfVerdict::CbfRequired);
+    assert(r.offsetFrames > 0.1);
+    assert(r.confidence > 0.0 && r.confidence <= 1.0);
+
+    // Mid-tick is as far from a boundary as it gets.
+    r = analyzeCbf(sample(2, 0.5), cfg);
+    expectNear(r.offsetFrames, 0.5, 1e-9, "mid-tick offset");
+    assert(r.required);
+
+    // Releases can be excluded from analysis.
+    cfg.includeReleases = false;
+    r = analyzeCbf(sample(2, 0.5, true), cfg);
+    assert(!r.required);
+
+    // Frame-0 input is always a CBF-only placement.
+    r = analyzeCbf(sample(0, 0.0), cfg);
+    assert(r.verdict == CbfVerdict::CbfRequired);
+
+    // Attempt-level verdicts.
+    cfg.includeReleases = true;
+    std::vector<CbfSample> clean = {sample(1, 0.0), sample(2, 0.02), sample(3, 0.0)};
+    assert(analyzeAttempt(clean, cfg).verdict == CbfVerdict::Standard);
+
+    std::vector<CbfSample> cbfRun = {sample(1, 0.45), sample(1, 0.4), sample(1, 0.0)};
+    auto attempt = analyzeAttempt(cbfRun, cfg);
+    assert(attempt.verdict == CbfVerdict::Cbf || attempt.verdict == CbfVerdict::CbfRequired);
+    assert(attempt.offsetFrames >= 0.4);
+
+    // Disabled config short-circuits.
+    cfg.enabled = false;
+    assert(analyzeCbf(sample(1, 0.5), cfg).verdict == CbfVerdict::Disabled);
+    assert(std::string(cbfTag(CbfVerdict::CbfRequired)) == "CBF!");
+    assert(!cbfDescription(attempt).empty());
+}
+
 } // namespace
 
 int main() {
@@ -277,6 +468,11 @@ int main() {
     testPitchMapping();
     testColorsBucketsAndFormatting();
     testPointsScoring();
+    testSubFrameSplitting();
+    testSubFrameFormatting();
+    testSubFrameScoring();
+    testInterpolatedWindows();
+    testCbfDetection();
     std::cout << "All NA Frame Counter core unit tests passed!\n";
     return 0;
 }

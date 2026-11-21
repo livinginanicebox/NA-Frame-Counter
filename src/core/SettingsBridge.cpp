@@ -13,7 +13,7 @@ RGBColor toRGB(cocos2d::ccColor3B c) {
     return {c.r, c.g, c.b};
 }
 
-constexpr std::array<std::string_view, 33> kAllKeys = {{
+constexpr std::array<std::string_view, 45> kAllKeys = {{
     "enabled",
     "measure-clicks",
     "measure-releases",
@@ -47,6 +47,18 @@ constexpr std::array<std::string_view, 33> kAllKeys = {{
     "hud-corner",
     "bucket-order",
     "show-last-badge",
+    "subframe-mode",
+    "subframe-decimals",
+    "subframe-precision-hud",
+    "subframe-toast",
+    "subframe-scoring",
+    "subframe-jitter-frames",
+    "cbf-badge",
+    "cbf-include-releases",
+    "cbf-guard-frames",
+    "marker-heatmap",
+    "subframe-toast-style",
+    "subframe-toast-duration",
 }};
 
 constexpr std::array<std::string_view, 22> kNandlKeys = {{
@@ -122,6 +134,18 @@ ModSettingsSnapshot SettingsBridge::read() {
     s.pointsCorner = parsePointsCorner(mod->getSettingValue<std::string>("points-corner"));
     s.pointsFormula = parsePointsFormula(mod->getSettingValue<std::string>("points-formula"));
     s.pointsDecimals = std::clamp(static_cast<int>(mod->getSettingValue<std::int64_t>("points-decimals")), 1, 4);
+    s.subFrameMode = parseSubFrameMode(mod->getSettingValue<std::string>("subframe-mode"));
+    s.subFrameDecimals = std::clamp(static_cast<int>(mod->getSettingValue<std::int64_t>("subframe-decimals")), 0, 3);
+    s.subFramePrecisionHud = mod->getSettingValue<bool>("subframe-precision-hud");
+    s.subFrameToast = mod->getSettingValue<bool>("subframe-toast");
+    s.subFrameScoring = mod->getSettingValue<bool>("subframe-scoring");
+    s.subFrameJitterFrames = static_cast<float>(mod->getSettingValue<double>("subframe-jitter-frames"));
+    s.cbfBadge = parseCbfBadgeMode(mod->getSettingValue<std::string>("cbf-badge"));
+    s.cbfIncludeReleases = mod->getSettingValue<bool>("cbf-include-releases");
+    s.cbfGuardFrames = static_cast<float>(mod->getSettingValue<double>("cbf-guard-frames"));
+    s.markerHeatmap = mod->getSettingValue<bool>("marker-heatmap");
+    s.toastStyle = parseToastStyle(mod->getSettingValue<std::string>("subframe-toast-style"));
+    s.toastDuration = static_cast<float>(mod->getSettingValue<double>("subframe-toast-duration"));
     s.showPrecisionHud = mod->getSettingValue<bool>("show-precision-hud");
     s.nandlDisplay = parseNandlDisplayMode(mod->getSettingValue<std::string>("nandl-model"));
     s.nandlCustom.base = mod->getSettingValue<bool>("nandl-show-base");
