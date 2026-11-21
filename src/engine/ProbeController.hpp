@@ -184,7 +184,6 @@ private:
     void resetPointsHUD();
     void updatePointsHUD(double deltaPoints = 0.0, std::uint64_t windowFrames = 0);
     void recomputePointsAndStats();
-    void recordNandlAndUpdate(std::int64_t actionFrame, std::uint64_t windowFrames, bool isRelease, bool ignored = false);
     void recordNandlAndUpdate(std::int64_t actionFrame, double windowFrames, bool isRelease, bool ignored = false);
 
     cocos2d::CCPoint ringScreenPos(PlayLayer* layer, cocos2d::CCPoint objectPos) const;

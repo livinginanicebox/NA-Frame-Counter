@@ -337,8 +337,6 @@ void ProbeController::updateSubFrameHUD() {
     if (!m_cfg.subFramePrecisionHud) return;
 
     constexpr float kCardW = 196.f;
-    constexpr float kCardH = 52.f;
-    const auto decimals = std::clamp(m_cfg.subFrameDecimals, 0, 3);
 
     const double lastPhase = std::clamp(m_stats.lastPhase, 0.0, 0.999);
     const auto lastFrames = m_subFrameSamples.empty() ? 0 : m_subFrameSamples.back().frames;
@@ -351,7 +349,14 @@ void ProbeController::updateSubFrameHUD() {
         : rampColor(1.0 - std::clamp(m_stats.lastScore / 100.0, 0.0, 1.0), m_cfg);
 
     if (hasChild(m_subFrameHud, m_subFrameMainLabel)) {
-        m_subFrameMainLabel->setString(fmt::format("{}F", display).c_str());
+        // formatWindowLabel already emits the "F" suffix for over-limit
+        // windows (">12F"); only add it when it is missing so multi-tick
+        // readouts stay "3" rather than "3F" and never become ">12FF".
+        const bool needsSuffix = !display.empty() && display.back() != 'F'
+            && m_cfg.subFrameMode != core::SubFrameMode::WholeFrames;
+        m_subFrameMainLabel->setString(
+            needsSuffix ? (display + "F").c_str() : display.c_str()
+        );
         m_subFrameMainLabel->limitLabelWidth(104.f, 0.52f, 0.24f);
         m_subFrameMainLabel->setColor(toCCColor(color));
     } else {

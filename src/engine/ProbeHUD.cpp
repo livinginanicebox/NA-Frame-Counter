@@ -449,15 +449,6 @@ void ProbeController::updatePrecisionHUD() {
 
 void ProbeController::recordNandlAndUpdate(
     std::int64_t actionFrame,
-    std::uint64_t windowFrames,
-    bool isRelease,
-    bool ignored
-) {
-    recordNandlAndUpdate(actionFrame, static_cast<double>(windowFrames), isRelease, ignored);
-}
-
-void ProbeController::recordNandlAndUpdate(
-    std::int64_t actionFrame,
     double windowFrames,
     bool isRelease,
     bool ignored
