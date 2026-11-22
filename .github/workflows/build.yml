@@ -232,3 +232,72 @@ jobs:
             "$BUILD_OUTPUT"/*.geode \
             --generate-notes \
             --verify-tag
+
+  # ---------------------------------------------------------------------------
+  # Platform diagnostics. These replicate the build action inline so that
+  # Windows/iOS failures are visible via annotations instead of being hidden
+  # behind the composite action's single "exit code 1". Non-blocking.
+  # ---------------------------------------------------------------------------
+  diagnose-windows:
+    name: Diagnose Windows
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          gh release download v4.0.2 -R geode-sdk/cli -p 'geode-cli-v4.0.2-win.zip' -D cli
+          unzip -o cli/geode-cli-v4.0.2-win.zip -d geode-cli >/dev/null
+          echo "$PWD/geode-cli" >> $GITHUB_PATH
+          echo "::warning::DIAG cli files: $(ls geode-cli | tr '\n' ' ')"
+          echo "::warning::DIAG clang: $(clang --version 2>&1 | head -1)"
+          echo "::warning::DIAG llvm ver: $(llvm-config --version 2>&1 | head -1)"
+          echo "::warning::DIAG cmake: $(cmake --version | head -1)"
+
+      - name: SDK setup + configure + build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          export PATH="$PWD/geode-cli:$PATH"
+          export CLI_PROFILE="$PWD/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods"
+
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win >/tmp/1.log 2>&1
+          echo "::warning::DIAG profile-add exit=$?"
+          geode sdk install "$PWD/geode-sdk-clone" >/tmp/2.log 2>&1
+          echo "::warning::DIAG sdk-install exit=$?"
+          export GEODE_SDK="$PWD/geode-sdk-clone"
+          geode sdk update 5.11.2 >/tmp/3.log 2>&1
+          echo "::warning::DIAG sdk-update exit=$?"
+          geode sdk install-binaries --platform win --version 5.11.2 >/tmp/4.log 2>&1
+          echo "::warning::DIAG install-binaries exit=$?"
+          echo "::warning::DIAG bin: $(ls "$GEODE_SDK/bin"/* 2>&1 | tr '\n' ' ')"
+
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+                -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DGEODE_DONT_INSTALL_MODS=ON -DGEODE_TARGET_PLATFORM=Win64 -G Ninja >/tmp/cfg.log 2>&1
+          code=$?
+          echo "::warning::DIAG configure exit=$code"
+          if [ $code -ne 0 ]; then
+            n=0
+            while IFS= read -r line && [ $n -lt 12 ]; do
+              echo "::error::DIAG[win-configure] ${line:0:300}"; n=$((n+1))
+            done < <(grep -iE "error|fatal|cannot|unable|not found|No valid|unknown" /tmp/cfg.log | tail -12)
+            [ "$n" -eq 0 ] && tail -8 /tmp/cfg.log | while IFS= read -r l; do echo "::error::DIAG[win-configure-tail] ${l:0:300}"; done
+          else
+            cmake --build build --parallel -- -k 0 >/tmp/build.log 2>&1
+            bcode=$?
+            echo "::warning::DIAG build exit=$bcode"
+            if [ $bcode -ne 0 ]; then
+              n=0
+              while IFS= read -r line && [ $n -lt 30 ]; do
+                echo "::error::DIAG[win-compile] ${line:0:300}"; n=$((n+1))
+              done < <(grep -E "error:|error C[0-9]+|fatal error|undefined reference" /tmp/build.log | sort -u | head -30)
+            fi
+          fi
