@@ -153,7 +153,9 @@ void Toast::buildChildren() {
     // Left accent bar: instant visual tone read without recoloring the card.
     m_accent = CCLayerColor::create({tint.r, tint.g, tint.b, 255}, 4.f, kCardH - 6.f);
     if (m_accent) {
-        m_accent->setIgnoreAnchorPointForPosition(false);
+        // CCNode exposes this as ignoreAnchorPointForPosition(bool); there is no
+        // setIgnoreAnchorPointForPosition in the Geode/cocos headers.
+        m_accent->ignoreAnchorPointForPosition(false);
         m_accent->setAnchorPoint({0.f, 0.5f});
         m_accent->setPosition({-kCardW * 0.5f + 3.f, 0.f});
         m_root->addChild(m_accent, 2);
