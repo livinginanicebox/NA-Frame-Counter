@@ -76,6 +76,18 @@ double ProbeController::releasePhaseFor(PlayLayer* layer, ClickJob const& job) c
     return 0.5;
 }
 
+namespace {
+// Geode's CCDrawNode::drawRect takes a fill *and* a border
+// (p1, p2, fill, borderWidth, borderColor) - there is no 3-argument overload.
+// These helpers keep the gauge/ramp call sites readable while drawing flat
+// fills (zero-width, fully transparent border).
+inline void fillRect(CCDrawNode* node, CCPoint const& p1, CCPoint const& p2,
+                     ccColor4F const& fill) {
+    static const ccColor4F kNoBorder{0.f, 0.f, 0.f, 0.f};
+    node->drawRect(p1, p2, fill, 0.f, kNoBorder);
+}
+} // namespace
+
 void ProbeController::clearSubFrameHUD() {
     auto* sentinel = m_subFrameSentinel;
     m_subFrameSentinel = nullptr;
@@ -424,31 +436,19 @@ void ProbeController::updateSubFrameHUD() {
         const float y0 = -22.f;
 
         const ccColor4F bg{0.16f, 0.19f, 0.26f, 0.85f};
-        m_subFrameGauge->drawRect(
-            CCPoint{x0, y0}, CCPoint{x0 + kGaugeW, y0 + kGaugeH}, bg
-        );
+        fillRect(m_subFrameGauge, CCPoint{x0, y0}, CCPoint{x0 + kGaugeW, y0 + kGaugeH}, bg);
 
         const auto tickCol = toCCColor(color);
         const ccColor4F fill{tickCol.r / 255.f, tickCol.g / 255.f, tickCol.b / 255.f, 1.f};
         const float markerX = x0 + static_cast<float>(lastPhase) * kGaugeW;
-        m_subFrameGauge->drawRect(
-            CCPoint{markerX - 1.2f, y0 - 2.f},
-            CCPoint{markerX + 1.2f, y0 + kGaugeH + 2.f},
-            fill
-        );
-        m_subFrameGauge->drawRect(
-            CCPoint{x0, y0}, CCPoint{markerX, y0 + kGaugeH}, fill
-        );
+        fillRect(m_subFrameGauge, CCPoint{markerX - 1.2f, y0 - 2.f}, CCPoint{markerX + 1.2f, y0 + kGaugeH + 2.f}, fill);
+        fillRect(m_subFrameGauge, CCPoint{x0, y0}, CCPoint{markerX, y0 + kGaugeH}, fill);
 
         // Quarter-tick notches so "0.25/0.5/0.75" is readable at a glance.
         const ccColor4F notch{1.f, 1.f, 1.f, 0.22f};
         for (int i = 1; i < 4; ++i) {
             const float nx = x0 + kGaugeW * (static_cast<float>(i) * 0.25f);
-            m_subFrameGauge->drawRect(
-                CCPoint{nx - 0.5f, y0 - 1.5f},
-                CCPoint{nx + 0.5f, y0 + kGaugeH + 1.5f},
-                notch
-            );
+            fillRect(m_subFrameGauge, CCPoint{nx - 0.5f, y0 - 1.5f}, CCPoint{nx + 0.5f, y0 + kGaugeH + 1.5f}, notch);
         }
     } else {
         m_subFrameGauge = nullptr;
@@ -473,11 +473,7 @@ void ProbeController::updateSubFrameHUD() {
             const auto c = rampColor(t, m_cfg);
             const ccColor4F col{c.r / 255.f, c.g / 255.f, c.b / 255.f, 0.95f};
             const float cx = x0 + static_cast<float>(i) * (kRampW / maxCells) + 0.6f;
-            m_subFrameRamp->drawRect(
-                CCPoint{cx, y0},
-                CCPoint{cx + (kRampW / maxCells) - 1.2f, y0 + kCellH},
-                col
-            );
+            fillRect(m_subFrameRamp, CCPoint{cx, y0}, CCPoint{cx + (kRampW / maxCells) - 1.2f, y0 + kCellH}, col);
         }
     } else {
         m_subFrameRamp = nullptr;
