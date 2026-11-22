@@ -33,9 +33,9 @@ jobs:
   diagnose:
     name: Diagnose SDK setup
     runs-on: ubuntu-latest
-    # Diagnostics only - never blocks the build. Prints the exact CLI sequence
-    # the build action runs, so failures are readable instead of hidden behind
-    # "Process completed with exit code 1".
+    # Diagnostics only - never blocks the build. Reports results through
+    # check-run annotations (::error:: / ::warning::) because the raw job log
+    # is not always retrievable, while annotations are.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -44,33 +44,71 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
-          gh release download v4.0.2 -R geode-sdk/cli -p 'geode-cli-v4.0.2-linux.zip' -D /tmp/cli
-          ls -la /tmp/cli
-          unzip -o /tmp/cli/geode-cli-v4.0.2-linux.zip -d /tmp/geode-cli
+          gh release download v4.0.2 -R geode-sdk/cli -p 'geode-cli-v4.0.2-linux.zip' -D /tmp/cli || {
+            echo "::error::CLI download failed"; exit 0; }
+          unzip -o /tmp/cli/geode-cli-v4.0.2-linux.zip -d /tmp/geode-cli >/dev/null
           chmod +x /tmp/geode-cli/geode
-          /tmp/geode-cli/geode --version
+          /tmp/geode-cli/geode --version || echo "::warning::geode --version failed"
 
-      - name: Reproduce the action's SDK setup
+      - name: Reproduce SDK setup with real exit codes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
           export PATH="/tmp/geode-cli:$PATH"
           export CLI_PROFILE="$PWD/cli-profile"
           mkdir -p "$CLI_PROFILE/geode/mods" "$CLI_PROFILE/Contents/geode/mods"
-          echo "--- profile add ---"
-          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win 2>&1 | tail -20
-          echo "--- sdk install ---"
-          geode sdk install "$PWD/geode-sdk-clone" 2>&1 | tail -30
+
+          report() {   # report <label> <logfile>
+            local code="$1" label="$2" log="$3"
+            if [ "$code" -ne 0 ]; then
+              echo "::error::DIAG $label exited $code"
+              # surface the last few meaningful lines as annotations
+              grep -iE "error|fail|cannot|unable|not found|denied|rate.?limit" "$log" | tail -6 | while IFS= read -r line; do
+                line="${line:0:400}"
+                echo "::error::DIAG[$label] $line"
+              done
+              tail -3 "$log" | while IFS= read -r line; do
+                echo "::warning::DIAG[$label] tail: ${line:0:400}"
+              done
+            else
+              echo "::warning::DIAG $label OK"
+            fi
+          }
+
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win >/tmp/1.log 2>&1
+          report $? "profile-add" /tmp/1.log
+
+          geode sdk install "$PWD/geode-sdk-clone" >/tmp/2.log 2>&1
+          report $? "sdk-install" /tmp/2.log
+
           export GEODE_SDK="$PWD/geode-sdk-clone"
-          echo "--- sdk update 5.11.2 ---"
-          geode sdk update 5.11.2 2>&1 | tail -30
-          echo "--- sdk install-binaries ---"
-          geode sdk install-binaries --platform android64 --version 5.11.2 2>&1 | tail -30
-          echo "--- resulting tree ---"
-          ls -la "$GEODE_SDK" 2>&1 | head -20
-          ls -la "$GEODE_SDK/bin" 2>&1 | head -20
+          geode sdk update 5.11.2 >/tmp/3.log 2>&1
+          report $? "sdk-update-5.11.2" /tmp/3.log
+
+          geode sdk install-binaries --platform android64 --version 5.11.2 >/tmp/4.log 2>&1
+          report $? "install-binaries" /tmp/4.log
+
+      - name: Configure this mod with the real SDK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export PATH="/tmp/geode-cli:$PATH"
+          export CLI_PROFILE="$PWD/cli-profile"
+          export GEODE_SDK="$PWD/geode-sdk-clone"
+          ls "$GEODE_SDK" >/dev/null 2>&1 || { echo "::error::DIAG SDK missing, skipping configure"; exit 0; }
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGEODE_DONT_INSTALL_MODS=ON                 -DGEODE_TARGET_PLATFORM=Win64 -G Ninja >/tmp/cfg.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "::error::DIAG cmake-configure exited $code"
+            grep -iE "error|fatal|cannot|unable|not found" /tmp/cfg.log | tail -8 | while IFS= read -r line; do
+              echo "::error::DIAG[configure] ${line:0:400}"
+            done
+            tail -5 /tmp/cfg.log | while IFS= read -r line; do
+              echo "::warning::DIAG[configure] tail: ${line:0:400}"
+            done
+          else
+            echo "::warning::DIAG cmake-configure OK"
+          fi
 
   build:
     strategy:
