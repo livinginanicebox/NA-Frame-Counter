@@ -119,6 +119,27 @@ jobs:
           fi
         continue-on-error: true
 
+      - name: Compile this mod (Android64)
+        continue-on-error: true
+        run: |
+          set +e
+          export GEODE_SDK="$PWD/geode-sdk-clone"
+          cmake --build build --parallel >/tmp/build.log 2>&1
+          code=$?
+          echo "::warning::DIAG build exit=$code"
+          if [ $code -ne 0 ]; then
+            n=0
+            while IFS= read -r line && [ $n -lt 12 ]; do
+              echo "::error::DIAG[compile] ${line:0:400}"
+              n=$((n+1))
+            done < <(grep -E "error:|error C[0-9]+|fatal error|undefined reference|FAILED:" /tmp/build.log | head -12)
+            if [ "$n" -eq 0 ]; then
+              tail -10 /tmp/build.log | while IFS= read -r line; do
+                echo "::error::DIAG[compile-tail] ${line:0:400}"
+              done
+            fi
+          fi
+
   build:
     strategy:
       fail-fast: false
