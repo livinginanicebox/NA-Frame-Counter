@@ -65,7 +65,7 @@ jobs:
         # Pinned: @main picked up "temp enable llvm update" (ca5481b4, 2026-11-20),
         # a Windows-only `choco upgrade llvm` step that breaks builds. d13abbb9 is
         # its parent: keeps the new-runner CMake fix, without the LLVM experiment.
-        uses: geode-sdk/build-geode-mod@d13abbb9
+        uses: geode-sdk/build-geode-mod@d13abbb93e69f737b7fdfaac37450c14083898c2
         with:
           sdk: given
           combine: true
@@ -79,7 +79,7 @@ jobs:
     steps:
       - name: Combine platform builds
         # Pinned alongside the build action above, so combine can't drift either.
-        uses: geode-sdk/build-geode-mod/combine@d13abbb9
+        uses: geode-sdk/build-geode-mod/combine@d13abbb93e69f737b7fdfaac37450c14083898c2
         id: combine
         with:
           zstd: true
