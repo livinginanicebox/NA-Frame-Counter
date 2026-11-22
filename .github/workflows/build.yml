@@ -30,6 +30,48 @@ jobs:
             -o test_core
           ./test_core
 
+  diagnose:
+    name: Diagnose SDK setup
+    runs-on: ubuntu-latest
+    # Diagnostics only - never blocks the build. Prints the exact CLI sequence
+    # the build action runs, so failures are readable instead of hidden behind
+    # "Process completed with exit code 1".
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Geode CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          gh release download v4.0.2 -R geode-sdk/cli -p 'geode-cli-v4.0.2-linux.zip' -D /tmp/cli
+          ls -la /tmp/cli
+          unzip -o /tmp/cli/geode-cli-v4.0.2-linux.zip -d /tmp/geode-cli
+          chmod +x /tmp/geode-cli/geode
+          /tmp/geode-cli/geode --version
+
+      - name: Reproduce the action's SDK setup
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          export PATH="/tmp/geode-cli:$PATH"
+          export CLI_PROFILE="$PWD/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods" "$CLI_PROFILE/Contents/geode/mods"
+          echo "--- profile add ---"
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win 2>&1 | tail -20
+          echo "--- sdk install ---"
+          geode sdk install "$PWD/geode-sdk-clone" 2>&1 | tail -30
+          export GEODE_SDK="$PWD/geode-sdk-clone"
+          echo "--- sdk update 5.11.2 ---"
+          geode sdk update 5.11.2 2>&1 | tail -30
+          echo "--- sdk install-binaries ---"
+          geode sdk install-binaries --platform android64 --version 5.11.2 2>&1 | tail -30
+          echo "--- resulting tree ---"
+          ls -la "$GEODE_SDK" 2>&1 | head -20
+          ls -la "$GEODE_SDK/bin" 2>&1 | head -20
+
   build:
     strategy:
       fail-fast: false
@@ -62,13 +104,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Geode mod
-        # Pinned to the newest commit whose own self-test is green.
-        # @main currently fails for everyone: the action's "Test the action"
-        # workflow went failure at 61a56c69 ("enable zstd by default", 2026-11-03)
-        # and is still failing at HEAD (ca5481b4, "temp enable llvm update",
-        # which re-enables a Windows-only `choco upgrade llvm`). This commit
-        # (a0f7676e, 2026-10-08) is the last one that built all platforms.
-        uses: geode-sdk/build-geode-mod@a0f7676e6fcd1a584f6d0c1c800239008412defc
+        env:
+          # The Geode CLI resolves release/binaries through api.github.com
+          # (see `install_binaries`). Without a token those calls are
+          # unauthenticated and get rate-limited, which fails every platform at
+          # the SDK-setup step, long before compilation. The action does not
+          # forward a token itself.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Pinned deliberately. @main is a moving target and picked up a
+        # Windows-only `choco upgrade llvm` step (ca5481b4, "temp enable llvm
+        # update", 2026-11-20) which breaks the Windows build. This commit is
+        # the parent of that hack and is the newest revision that still has the
+        # required new-runner CMake fix (-DCMAKE_CXX_SCAN_FOR_MODULES=OFF,
+        # d13abbb9). Do NOT pin earlier: without that flag, CMake's C++ module
+        # scanner runs on current runners and configure fails.
+        uses: geode-sdk/build-geode-mod@d13abbb93e69f737b7fdfaac37450c14083898c2
         with:
           sdk: given
           combine: true
@@ -89,7 +139,7 @@ jobs:
     steps:
       - name: Combine platform builds
         # Pinned alongside the build action above, so combine can't drift either.
-        uses: geode-sdk/build-geode-mod/combine@a0f7676e6fcd1a584f6d0c1c800239008412defc
+        uses: geode-sdk/build-geode-mod/combine@d13abbb93e69f737b7fdfaac37450c14083898c2
         id: combine
         with:
           zstd: true
