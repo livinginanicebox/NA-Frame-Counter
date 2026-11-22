@@ -73,6 +73,13 @@ jobs:
           sdk: given
           combine: true
           target: ${{ matrix.config.target }}
+          # Pin the Geode CLI. The action defaults this to "latest", downloading
+          # a fresh CLI on every run - so a CLI release silently changes the
+          # build. Geode CLI 4.0.0 (2026-10-30) rewrote profile/SDK path
+          # handling ("Set sdk default path in $XDG_DATA_HOME") and broke the
+          # `geode sdk update <ver>` + `sdk install-binaries` sequence this
+          # action relies on. 3.9.0 is the last release before that rewrite.
+          cli: v3.9.0
 
   package:
     name: Combine & Package
