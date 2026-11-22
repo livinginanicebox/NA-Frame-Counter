@@ -87,8 +87,9 @@ jobs:
 
           geode sdk install-binaries --platform android64 --version 5.11.2 >/tmp/4.log 2>&1
           report $? "install-binaries" /tmp/4.log
+          echo "::warning::DIAG bin tree: $(ls -R "$GEODE_SDK/bin" 2>/dev/null | head -20 | tr '\n' ' ')"
 
-      - name: Configure this mod with the real SDK
+      - name: Configure this mod (Android64, real SDK + NDK)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -96,29 +97,25 @@ jobs:
           export PATH="/tmp/geode-cli:$PATH"
           export CLI_PROFILE="$PWD/cli-profile"
           export GEODE_SDK="$PWD/geode-sdk-clone"
+          NDK=/usr/local/lib/android/sdk/ndk/29.0.14206865
 
-          echo "::warning::DIAG GEODE_SDK=$GEODE_SDK"
-          if [ ! -d "$GEODE_SDK" ]; then
-            echo "::error::DIAG SDK directory missing at $GEODE_SDK"; exit 0
-          fi
-          echo "::warning::DIAG sdk tree: $(ls "$GEODE_SDK" | tr '\n' ' ')"
-          echo "::warning::DIAG cmake version: $(cmake --version | head -1)"
-          echo "::warning::DIAG ninja: $(ninja --version 2>&1 | head -1)"
+          echo "::warning::DIAG geode VERSION file: $(cat "$GEODE_SDK/VERSION" 2>&1)"
+          echo "::warning::DIAG sdk bin contents: $(ls "$GEODE_SDK/bin" 2>&1 | tr '\n' ' ')"
+          echo "::warning::DIAG sdk bin/<ver>: $(ls "$GEODE_SDK/bin"/* 2>&1 | head -12 | tr '\n' ' ')"
+          echo "::warning::DIAG ndk exists: $([ -d $NDK ] && echo yes || echo no)"
 
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGEODE_DONT_INSTALL_MODS=ON -DGEODE_TARGET_PLATFORM=Win64 -G Ninja >/tmp/cfg.log 2>&1
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGEODE_DONT_INSTALL_MODS=ON                 -DGEODE_TARGET_PLATFORM=Android64                 -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake                 -DANDROID_STL=c++_shared -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-23                 -G Ninja >/tmp/cfg.log 2>&1
           code=$?
-          echo "::warning::DIAG cmake-configure exit=$code"
-          if [ $code -ne 0 ]; then
-            n=0
-            while IFS= read -r line && [ $n -lt 8 ]; do
-              echo "::error::DIAG[configure] ${line:0:400}"
-              n=$((n+1))
-            done < <(grep -iE "error|fatal|cannot|unable|not found|unknown|requires" /tmp/cfg.log | tail -8)
-            if [ "$n" -eq 0 ]; then
-              tail -6 /tmp/cfg.log | while IFS= read -r line; do
-                echo "::error::DIAG[configure-tail] ${line:0:400}"
-              done
-            fi
+          echo "::warning::DIAG configure exit=$code"
+          n=0
+          while IFS= read -r line && [ $n -lt 10 ]; do
+            echo "::error::DIAG[configure] ${line:0:400}"
+            n=$((n+1))
+          done < <(grep -iE "error|fatal|cannot|unable|not found|unknown|requires|No valid" /tmp/cfg.log | tail -10)
+          if [ "$n" -eq 0 ] && [ $code -ne 0 ]; then
+            tail -8 /tmp/cfg.log | while IFS= read -r line; do
+              echo "::error::DIAG[configure-tail] ${line:0:400}"
+            done
           fi
         continue-on-error: true
 
