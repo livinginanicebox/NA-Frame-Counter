@@ -92,23 +92,35 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           export PATH="/tmp/geode-cli:$PATH"
           export CLI_PROFILE="$PWD/cli-profile"
           export GEODE_SDK="$PWD/geode-sdk-clone"
-          ls "$GEODE_SDK" >/dev/null 2>&1 || { echo "::error::DIAG SDK missing, skipping configure"; exit 0; }
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGEODE_DONT_INSTALL_MODS=ON                 -DGEODE_TARGET_PLATFORM=Win64 -G Ninja >/tmp/cfg.log 2>&1
-          code=$?
-          if [ $code -ne 0 ]; then
-            echo "::error::DIAG cmake-configure exited $code"
-            grep -iE "error|fatal|cannot|unable|not found" /tmp/cfg.log | tail -8 | while IFS= read -r line; do
-              echo "::error::DIAG[configure] ${line:0:400}"
-            done
-            tail -5 /tmp/cfg.log | while IFS= read -r line; do
-              echo "::warning::DIAG[configure] tail: ${line:0:400}"
-            done
-          else
-            echo "::warning::DIAG cmake-configure OK"
+
+          echo "::warning::DIAG GEODE_SDK=$GEODE_SDK"
+          if [ ! -d "$GEODE_SDK" ]; then
+            echo "::error::DIAG SDK directory missing at $GEODE_SDK"; exit 0
           fi
+          echo "::warning::DIAG sdk tree: $(ls "$GEODE_SDK" | tr '\n' ' ')"
+          echo "::warning::DIAG cmake version: $(cmake --version | head -1)"
+          echo "::warning::DIAG ninja: $(ninja --version 2>&1 | head -1)"
+
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGEODE_DONT_INSTALL_MODS=ON -DGEODE_TARGET_PLATFORM=Win64 -G Ninja >/tmp/cfg.log 2>&1
+          code=$?
+          echo "::warning::DIAG cmake-configure exit=$code"
+          if [ $code -ne 0 ]; then
+            n=0
+            while IFS= read -r line && [ $n -lt 8 ]; do
+              echo "::error::DIAG[configure] ${line:0:400}"
+              n=$((n+1))
+            done < <(grep -iE "error|fatal|cannot|unable|not found|unknown|requires" /tmp/cfg.log | tail -8)
+            if [ "$n" -eq 0 ]; then
+              tail -6 /tmp/cfg.log | while IFS= read -r line; do
+                echo "::error::DIAG[configure-tail] ${line:0:400}"
+              done
+            fi
+          fi
+        continue-on-error: true
 
   build:
     strategy:
