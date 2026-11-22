@@ -371,3 +371,56 @@ jobs:
               [ "$n" -eq 0 ] && tail -12 /tmp/build.log | while IFS= read -r l; do echo "::error::DIAG[ios-tail] ${l:0:300}"; done
             fi
           fi
+
+  diagnose-ios-versions:
+    name: Diagnose iOS SDK versions
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Try several Geode SDK versions on iOS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          gh release download v4.0.2 -R geode-sdk/cli -p 'geode-cli-v4.0.2-mac.zip' -D cli
+          unzip -o cli/geode-cli-v4.0.2-mac.zip -d geode-cli >/dev/null
+          chmod +x geode-cli/geode 2>/dev/null
+          export PATH="$PWD/geode-cli:$PATH"
+          export CLI_PROFILE="$PWD/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods" "$CLI_PROFILE/Contents/geode/mods"
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win >/dev/null 2>&1
+          geode sdk install "$PWD/geode-sdk-clone" >/dev/null 2>&1
+          export GEODE_SDK="$PWD/geode-sdk-clone"
+
+          for VER in 5.11.0 5.11.1 5.11.2; do
+            echo "::warning::DIAG === trying SDK $VER ==="
+            geode sdk update "$VER" >/tmp/u.log 2>&1
+            echo "::warning::DIAG[$VER] update exit=$?"
+            geode sdk install-binaries --platform ios --version "$VER" >/tmp/b.log 2>&1
+            echo "::warning::DIAG[$VER] binaries exit=$? bin=$(ls "$GEODE_SDK/bin"/* 2>&1 | tr '\n' ' ')"
+            rm -rf "build-$VER"
+            cmake -B "build-$VER" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+                  -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DCMAKE_SYSTEM_NAME=iOS -DGEODE_TARGET_PLATFORM=iOS \
+                  -DGEODE_DISABLE_PRECOMPILED_HEADERS=OFF -DGEODE_DONT_INSTALL_MODS=ON -G Ninja >/tmp/c-$VER.log 2>&1
+            cfg=$?
+            echo "::warning::DIAG[$VER] configure exit=$cfg"
+            if [ $cfg -eq 0 ]; then
+              cmake --build "build-$VER" --parallel >/tmp/bd-$VER.log 2>&1
+              bd=$?
+              echo "::warning::DIAG[$VER] BUILD EXIT=$bd"
+              if [ $bd -ne 0 ]; then
+                n=0
+                while IFS= read -r line && [ $n -lt 6 ]; do
+                  echo "::error::DIAG[$VER] ${line:0:250}"; n=$((n+1))
+                done < <(grep -E "error:|fatal error|Undefined symbols" /tmp/bd-$VER.log | sort -u | head -6)
+              fi
+            else
+              n=0
+              while IFS= read -r line && [ $n -lt 4 ]; do
+                echo "::error::DIAG[$VER-cfg] ${line:0:250}"; n=$((n+1))
+              done < <(grep -iE "error|fatal|No valid" /tmp/c-$VER.log | tail -4)
+            fi
+          done
