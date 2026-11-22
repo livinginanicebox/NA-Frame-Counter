@@ -327,7 +327,7 @@ jobs:
           chmod +x geode-cli/geode 2>/dev/null
           export PATH="$PWD/geode-cli:$PATH"
           export CLI_PROFILE="$PWD/cli-profile"
-          mkdir -p "$CLI_PROFILE/Contents/geode/mods"
+          mkdir -p "$CLI_PROFILE/geode/mods" "$CLI_PROFILE/Contents/geode/mods"
 
           geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win >/tmp/1.log 2>&1
           echo "::warning::DIAG profile-add exit=$?"
@@ -340,6 +340,13 @@ jobs:
           echo "::warning::DIAG install-binaries exit=$?"
           echo "::warning::DIAG bin: $(ls "$GEODE_SDK/bin"/* 2>&1 | tr '\n' ' ')"
           echo "::warning::DIAG xcode: $(xcodebuild -version 2>&1 | tr '\n' ' ')"
+          echo "::warning::DIAG index reach: $(curl -s -o /dev/null -w '%{http_code}' https://api.geode-sdk.org/v1/mods/geode.node-ids)"
+          curl -s https://api.geode-sdk.org/v1/mods/geode.node-ids >/tmp/idx.json 2>&1
+          echo "::warning::DIAG index bytes: $(wc -c < /tmp/idx.json 2>&1)"
+          echo "::warning::DIAG deps: $(python3 -c "import json;print(json.load(open('mod.json'))['dependencies'])" 2>&1)"
+          geode project check build --externals "" --platform ios >/tmp/check.log 2>&1
+          echo "::warning::DIAG project-check exit=$?"
+          tail -15 /tmp/check.log | while IFS= read -r l; do echo "::warning::DIAG[check] ${l:0:300}"; done
 
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
                 -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DCMAKE_SYSTEM_NAME=iOS -DGEODE_TARGET_PLATFORM=iOS \
