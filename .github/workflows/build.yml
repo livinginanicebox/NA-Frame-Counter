@@ -308,3 +308,59 @@ jobs:
               done < <(grep -E "error:|error C[0-9]+|fatal error|undefined reference" /tmp/build.log | sort -u | head -30)
             fi
           fi
+
+  diagnose-ios:
+    name: Diagnose iOS
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SDK setup + configure + build (iOS)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          gh release download v4.0.2 -R geode-sdk/cli -p 'geode-cli-v4.0.2-mac.zip' -D cli
+          unzip -o cli/geode-cli-v4.0.2-mac.zip -d geode-cli >/dev/null
+          chmod +x geode-cli/geode 2>/dev/null
+          export PATH="$PWD/geode-cli:$PATH"
+          export CLI_PROFILE="$PWD/cli-profile"
+          mkdir -p "$CLI_PROFILE/Contents/geode/mods"
+
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win >/tmp/1.log 2>&1
+          echo "::warning::DIAG profile-add exit=$?"
+          geode sdk install "$PWD/geode-sdk-clone" >/tmp/2.log 2>&1
+          echo "::warning::DIAG sdk-install exit=$?"
+          export GEODE_SDK="$PWD/geode-sdk-clone"
+          geode sdk update 5.11.2 >/tmp/3.log 2>&1
+          echo "::warning::DIAG sdk-update exit=$?"
+          geode sdk install-binaries --platform ios --version 5.11.2 >/tmp/4.log 2>&1
+          echo "::warning::DIAG install-binaries exit=$?"
+          echo "::warning::DIAG bin: $(ls "$GEODE_SDK/bin"/* 2>&1 | tr '\n' ' ')"
+          echo "::warning::DIAG xcode: $(xcodebuild -version 2>&1 | tr '\n' ' ')"
+
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+                -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DCMAKE_SYSTEM_NAME=iOS -DGEODE_TARGET_PLATFORM=iOS \
+                -DGEODE_DISABLE_PRECOMPILED_HEADERS=OFF -DGEODE_DONT_INSTALL_MODS=ON -G Ninja >/tmp/cfg.log 2>&1
+          code=$?
+          echo "::warning::DIAG configure exit=$code"
+          if [ $code -ne 0 ]; then
+            n=0
+            while IFS= read -r line && [ $n -lt 15 ]; do
+              echo "::error::DIAG[ios-configure] ${line:0:300}"; n=$((n+1))
+            done < <(grep -iE "error|fatal|cannot|unable|not found|No valid|unknown|requires" /tmp/cfg.log | tail -15)
+            [ "$n" -eq 0 ] && tail -10 /tmp/cfg.log | while IFS= read -r l; do echo "::error::DIAG[ios-configure-tail] ${l:0:300}"; done
+          else
+            cmake --build build --parallel -- -k 0 >/tmp/build.log 2>&1
+            bcode=$?
+            echo "::warning::DIAG build exit=$bcode"
+            if [ $bcode -ne 0 ]; then
+              n=0
+              while IFS= read -r line && [ $n -lt 30 ]; do
+                echo "::error::DIAG[ios-compile] ${line:0:300}"; n=$((n+1))
+              done < <(grep -E "error:|fatal error|undefined reference|Undefined symbols" /tmp/build.log | sort -u | head -30)
+              [ "$n" -eq 0 ] && tail -12 /tmp/build.log | while IFS= read -r l; do echo "::error::DIAG[ios-tail] ${l:0:300}"; done
+            fi
+          fi
