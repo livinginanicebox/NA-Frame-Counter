@@ -181,14 +181,21 @@ jobs:
           # the SDK-setup step, long before compilation. The action does not
           # forward a token itself.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Pinned deliberately. @main is a moving target and picked up a
-        # Windows-only `choco upgrade llvm` step (ca5481b4, "temp enable llvm
-        # update", 2026-11-20) which breaks the Windows build. This commit is
-        # the parent of that hack and is the newest revision that still has the
-        # required new-runner CMake fix (-DCMAKE_CXX_SCAN_FOR_MODULES=OFF,
-        # d13abbb9). Do NOT pin earlier: without that flag, CMake's C++ module
-        # scanner runs on current runners and configure fails.
-        uses: geode-sdk/build-geode-mod@d13abbb93e69f737b7fdfaac37450c14083898c2
+        # Pinned to @main's current revision on purpose.
+        #
+        # The runner toolchain is the reason. Windows runners now ship the MSVC
+        # STL headers that hard-require Clang 22+ ("STL1000: Unexpected
+        # compiler version, expected Clang 22 or newer"), while the image's
+        # clang is 20.1.8. The action fixes this with a Windows-only
+        # `choco upgrade llvm`, which was commented out for years and only
+        # re-enabled in ca5481b4 ("temp enable llvm update", 2026-11-20).
+        # Pinning to d13abbb9 or earlier omits that step and Windows fails in
+        # the STL before any mod code is compiled.
+        #
+        # Do not pin below d13abbb9 either: that commit is what adds
+        # -DCMAKE_CXX_SCAN_FOR_MODULES=OFF, without which CMake's C++ module
+        # scanner breaks configure on current runners.
+        uses: geode-sdk/build-geode-mod@ca5481b48c58f9bd2ed4306355c66199bbcdf0e5
         with:
           sdk: given
           combine: true
@@ -209,7 +216,7 @@ jobs:
     steps:
       - name: Combine platform builds
         # Pinned alongside the build action above, so combine can't drift either.
-        uses: geode-sdk/build-geode-mod/combine@d13abbb93e69f737b7fdfaac37450c14083898c2
+        uses: geode-sdk/build-geode-mod/combine@ca5481b48c58f9bd2ed4306355c66199bbcdf0e5
         id: combine
         with:
           zstd: true
